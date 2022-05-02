@@ -1,14 +1,21 @@
 #include <micro_ros_arduino.h>
-
-
-#include <brickfeeder_cmd/srv/brickfeederservice.h>
 #include <example_interfaces/srv/add_two_ints.h>
 #include <stdio.h>
 #include <rcl/rcl.h>
 #include <rcl/error_handling.h>
 #include <rclc/rclc.h>
 #include <rclc/executor.h>
-#include <std_msgs/msg/int64.h>
+#include <std_msgs/msg/string.h>
+#include <std_msgs/msg/int32.h>
+
+/*
+Brickfeeder firmware code.
+The code is based on the the FREERTOS scheduling in a combination with micro ros's own task handler.
+So the code is not set up as normal arduino code. Instead, the individual functions are declared before the setup and loop func
+and then i use the FREERTOS scheduling funcs in the setup func to setup how the priority of each task.
+The FREERTOS scheduler will then self control when funcs are being called.
+For the micro ros funcs we use the included spin funcs to run our micro ros dependent code, which also provides scheduling functionalities.    
+*/
 
 #if CONFIG_FREERTOS_UNICORE
 static const BaseType_t app_cpu = 0;
@@ -19,6 +26,7 @@ static const BaseType_t app_cpu = 1;
 #define PWM1_Ch 0
 #define PWM1_Res 8
 #define PWM1_Freq 40
+#define ARRAY_LEN 200
 static const int led_pin = LED_BUILTIN;
 
 
@@ -39,6 +47,9 @@ static const int led_pin = LED_BUILTIN;
   boolean new_object = true;
   boolean new_job = false;
   boolean job_ran = false;
+  String status = "G1";
+  String* status_prt = &status;
+
 
   int step_pin = 26;
   int dir_pin = 27;
@@ -57,29 +68,44 @@ static const int led_pin = LED_BUILTIN;
   int out_read = 22;
   int out_solenoid = 21; 
 
-  //char agent_ip[15] = "192.168.0.101";
-  //char SSID_name[15] = "FTTH_EX1052";
-  //char SSID_psw[13] = "Edeksilrerv7";
-  char agent_ip[15] = "192.168.0.100";
+  unsigned long long time_offset = 0;
+  /*char agent_ip[15] = "192.168.0.100";
   char SSID_name[15] = "TP-Link_4DA2";
-  char SSID_psw[10] = "65370148";
+  char SSID_psw[10] = "65370148";*/
+  char agent_ip[15] = "192.168.0.42";
+  char SSID_name[18] = "FTTH_EX1052_24GHz";
+  char SSID_psw[18] = "Edeksilrerv7";
+  /*char agent_ip[15] = "192.168.1.142";
+  char SSID_name[15] = "NOKIA-AE11";
+  char SSID_psw[11] = "PyLM95tx88";*/
+  
 
 rcl_node_t node;
 rclc_support_t support;
 rcl_allocator_t allocator;
 rclc_executor_t executor;
-
+rcl_subscription_t subscriber;
+rcl_publisher_t publisher;
 rcl_service_t service;
 rcl_wait_set_t wait_set;
+rcl_timer_t timer;
 
-brickfeeder_cmd__srv__Brickfeederservice_Request res;
-brickfeeder_cmd__srv__Brickfeederservice_Response req;
-
-//example_interfaces__srv__AddTwoInts_Response res;
-//example_interfaces__srv__AddTwoInts_Request req;
+std_msgs__msg__Int32 msg;
+std_msgs__msg__String msg_pub;
 
 #define RCCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){while(1){Serial.println("Failed at setup"); delay(1000);};}}
 #define RCSOFTCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){}}
+
+
+void syncTime()
+{
+    // get the current time from the agent
+    unsigned long now = millis();
+    RCCHECK(rmw_uros_sync_session(10));
+    unsigned long long ros_time_ms = rmw_uros_epoch_millis(); 
+    // now we can find the difference between ROS time and uC time
+    time_offset = ros_time_ms - now;
+}
 
 void read_serial(void *parameter)
 {
@@ -92,6 +118,7 @@ void read_serial(void *parameter)
       //ledcWrite(vibrator_enable, 0);
       Serial.println("Job done!");
       Serial.println("How many objects should be dispensed?");
+      *status_prt = "G2";
     }
     digitalWrite(out_read, 1);
     vTaskDelay(3 / portTICK_PERIOD_MS);
@@ -186,31 +213,49 @@ void solenoid(void *parameter)
   }
 }
 
-void service_callback(const void * req, void * res){
-  brickfeeder_cmd__srv__Brickfeederservice_Request * req_in = (brickfeeder_cmd__srv__Brickfeederservice_Request *) req;
-  brickfeeder_cmd__srv__Brickfeederservice_Response * res_in = (brickfeeder_cmd__srv__Brickfeederservice_Response *) res;
-  //example_interfaces__srv__AddTwoInts_Request * req_in = (example_interfaces__srv__AddTwoInts_Request *) req;
-  //example_interfaces__srv__AddTwoInts_Response * res_in = (example_interfaces__srv__AddTwoInts_Response *) res;
-  if (!new_job)
+void subscription_callback(const void * msgin){
+  const std_msgs__msg__Int32 * msg = (const std_msgs__msg__Int32 *)msgin;
+
+  Serial.println("Received message");
+  if (!new_job)//If no job is processed now, then begin new job.
   {
       obj_dispensed = 0;
       //obj_count = req_in->a;
-      obj_count = req_in->brickgoal;
+      obj_count = msg->data;
       Serial.print("Now dispensing ");
       Serial.print(obj_count, DEC);
       Serial.println(" objects.");
       new_job = true;
+      *status_prt = "G3";
       //ledcWrite(vibrator_enable, 60);
   }
-  else if (job_ran)
+  /*else if (job_ran)
   {
     //res_in->sum = obj_count;
     res_in->goaldone = true;
     job_ran = false;
-  }
-  //printf("Service request value: %d + %d.\n", (int) req_in->a, (int) req_in->b);
+  }*/
+}
 
-  //res_in->sum = req_in->a + req_in->b;
+//void timer_callback(void *parameter)
+void timer_callback(rcl_timer_t * timer, int64_t last_call_time)
+{
+  /*while(1)
+  {
+    sprintf(msg_pub.data.data, status.c_str());
+    //sprintf(msg_pub.data.data, "Test");
+    msg_pub.data.size = strlen(msg_pub.data.data);
+    RCSOFTCHECK(rcl_publish(&publisher, &msg_pub, NULL));
+    vTaskDelay(500 / portTICK_PERIOD_MS);
+  }*/
+  RCLC_UNUSED(last_call_time);
+  if (timer != NULL) // Periodically send status update.
+  {
+    sprintf(msg_pub.data.data, status.c_str());
+    //sprintf(msg_pub.data.data, "Test");
+    msg_pub.data.size = strlen(msg_pub.data.data);
+    RCSOFTCHECK(rcl_publish(&publisher, &msg_pub, NULL));
+  }
 }
 
 void motorPWM(void *parameter)
@@ -251,18 +296,41 @@ void setup() {
 
   // create node
   //RCCHECK(rclc_node_init_default(&node, "add_twoints_client_rclc", "", &support));
-  RCCHECK(rclc_node_init_default(&node, "brickfeeder_client_rclc", "", &support));
+  RCCHECK(rclc_node_init_default(&node, "brickfeeder_control", "", &support));
   Serial.println("created node");
   
-  // create service
-  RCCHECK(rclc_service_init_default(&service, &node, ROSIDL_GET_SRV_TYPE_SUPPORT(brickfeeder_cmd, srv, Brickfeederservice), "/brickfeeder"));
+  // create subscriber
+  RCCHECK(rclc_subscription_init_best_effort(&subscriber, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32), "brickfeeder_goal"));
+  // create publisher
+  RCCHECK(rclc_publisher_init_best_effort(&publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String), "/brickfeeder_status"));
   //RCCHECK(rclc_service_init_default(&service, &node, ROSIDL_GET_SRV_TYPE_SUPPORT(example_interfaces, srv, AddTwoInts), "/add_two_ints"));
-  Serial.println("created service");
+  Serial.println("created subsrciber and publisher");
+
+  // create timer,
+  const unsigned int timer_timeout = 20;
+  RCCHECK(rclc_timer_init_default(&timer,&support,RCL_MS_TO_NS(timer_timeout),timer_callback));
+
   // create executor
-  RCCHECK(rclc_executor_init(&executor, &support.context, 1, &allocator));
+  executor = rclc_executor_get_zero_initialized_executor();
+  RCCHECK(rclc_executor_init(&executor, &support.context, 4, &allocator));
   Serial.println("initiated executor");
-  RCCHECK(rclc_executor_add_service(&executor, &service, &req, &res, service_callback));
+  RCCHECK(rclc_executor_add_subscription(&executor, &subscriber, &msg, subscription_callback, ON_NEW_DATA));
+  RCCHECK(rclc_executor_add_timer(&executor, &timer));
+
   Serial.println("created executor");
+
+  syncTime();
+
+  msg.data = 0;
+  msg_pub.data.data = (char * ) malloc(ARRAY_LEN * sizeof(char));
+	msg_pub.data.size = 0;
+	msg_pub.data.capacity = ARRAY_LEN;
+  *status_prt = "G1";
+
+  /*STATUS MSG:
+  - G1 = Booting
+  - G2 = Ready for new goal
+  - G3 = Processing goal*/
 
   pinMode(step_pin, OUTPUT);//step pin
   //pinMode(5, OUTPUT);//direction pin
@@ -348,6 +416,6 @@ void setup() {
 
 
 void loop() {
-  delay(100);
-  RCSOFTCHECK(rclc_executor_spin_some(&executor, RCL_MS_TO_NS(100)));
+  //delay(100);
+  RCSOFTCHECK(rclc_executor_spin_some(&executor, RCL_MS_TO_NS(20)));
 }
