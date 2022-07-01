@@ -25,25 +25,14 @@ static const BaseType_t app_cpu = 1;
 
 #define PWM1_Ch 0
 #define PWM1_Res 8
-#define PWM1_Freq 40
+#define PWM1_Freq 3000
 #define ARRAY_LEN 200
-static const int led_pin = LED_BUILTIN;
+static const int led_pin = 2;
 
 
   int state = 0;
-  int steptimer = 5;
-  int read_ir_timer = 3;
-  int motor_timer = 6;
   int obj_count = 0;
   int obj_dispensed = 0;
-  unsigned long solenoid_off_timer = 1000;
-  unsigned long solenoid_on_timer = 100;
-  unsigned long begin_time;
-  unsigned long end_time;
-  unsigned long currentMillis;
-  unsigned long previous_step_Millis = 0;
-  unsigned long previous_ir_Millis = 0;
-  unsigned long previous_motor_Millis = 0;
   boolean new_object = true;
   boolean new_job = false;
   boolean job_ran = false;
@@ -64,20 +53,15 @@ static const int led_pin = LED_BUILTIN;
   int MS3_pin = 33;
   int ir_pin = 25;
 
+  // pins only used for troubleshooting scheduling
   int out_ir = 23;
   int out_read = 22;
   int out_solenoid = 21; 
 
   unsigned long long time_offset = 0;
-  /*char agent_ip[15] = "192.168.0.100";
+  char agent_ip[15] = "192.168.0.109";
   char SSID_name[15] = "TP-Link_4DA2";
-  char SSID_psw[10] = "65370148";*/
-  char agent_ip[15] = "192.168.0.42";
-  char SSID_name[18] = "FTTH_EX1052_24GHz";
-  char SSID_psw[18] = "Edeksilrerv7";
-  /*char agent_ip[15] = "192.168.1.142";
-  char SSID_name[15] = "NOKIA-AE11";
-  char SSID_psw[11] = "PyLM95tx88";*/
+  char SSID_psw[10] = "65370148";
   
 
 rcl_node_t node;
@@ -115,7 +99,6 @@ void read_serial(void *parameter)
     {
       job_ran = true;
       new_job = false;
-      //ledcWrite(vibrator_enable, 0);
       Serial.println("Job done!");
       Serial.println("How many objects should be dispensed?");
       *status_prt = "G2";
@@ -156,17 +139,16 @@ void stepmotor_run(void *parameter)
   {
     if (new_job == true)
     {
-    //Serial.println("stepping");
     digitalWrite(step_pin, 1);//step signaL ON
     digitalWrite(step_pin, 0);//OFF
     digitalWrite(vibrator_pin1, 1);
     digitalWrite(vibrator_pin2, 0);
-    vTaskDelay(5 / portTICK_PERIOD_MS);
+    vTaskDelay(2 / portTICK_PERIOD_MS);
     //delay between steps-- 5ms is a common value that works well in full step mode
     }
     else
     {
-      vTaskDelay(5 / portTICK_PERIOD_MS);
+      vTaskDelay(2 / portTICK_PERIOD_MS);
       digitalWrite(vibrator_pin1, 0);
       digitalWrite(vibrator_pin2, 0);
     }
@@ -220,34 +202,18 @@ void subscription_callback(const void * msgin){
   if (!new_job)//If no job is processed now, then begin new job.
   {
       obj_dispensed = 0;
-      //obj_count = req_in->a;
       obj_count = msg->data;
       Serial.print("Now dispensing ");
       Serial.print(obj_count, DEC);
       Serial.println(" objects.");
       new_job = true;
       *status_prt = "G3";
-      //ledcWrite(vibrator_enable, 60);
   }
-  /*else if (job_ran)
-  {
-    //res_in->sum = obj_count;
-    res_in->goaldone = true;
-    job_ran = false;
-  }*/
 }
 
 //void timer_callback(void *parameter)
 void timer_callback(rcl_timer_t * timer, int64_t last_call_time)
 {
-  /*while(1)
-  {
-    sprintf(msg_pub.data.data, status.c_str());
-    //sprintf(msg_pub.data.data, "Test");
-    msg_pub.data.size = strlen(msg_pub.data.data);
-    RCSOFTCHECK(rcl_publish(&publisher, &msg_pub, NULL));
-    vTaskDelay(500 / portTICK_PERIOD_MS);
-  }*/
   RCLC_UNUSED(last_call_time);
   if (timer != NULL) // Periodically send status update.
   {
@@ -265,14 +231,10 @@ void motorPWM(void *parameter)
     if (new_job == true)
     {
       vTaskDelay(5 / portTICK_PERIOD_MS);
-      //digitalWrite(vibrator_enable, 1);
-      //vTaskDelay(10 / portTICK_PERIOD_MS);
-      //digitalWrite(vibrator_enable, 0);
-      ledcWrite(PWM1_Ch, 20);
+      ledcWrite(PWM1_Ch, 37);
     }
     else
     {
-      //digitalWrite(vibrator_enable, 0);
       ledcWrite(PWM1_Ch, 0);
       vTaskDelay(5 / portTICK_PERIOD_MS);
     }
@@ -295,15 +257,13 @@ void setup() {
   Serial.println("created init options"); 
 
   // create node
-  //RCCHECK(rclc_node_init_default(&node, "add_twoints_client_rclc", "", &support));
   RCCHECK(rclc_node_init_default(&node, "brickfeeder_control", "", &support));
   Serial.println("created node");
   
   // create subscriber
   RCCHECK(rclc_subscription_init_best_effort(&subscriber, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Int32), "brickfeeder_goal"));
   // create publisher
-  RCCHECK(rclc_publisher_init_best_effort(&publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String), "/brickfeeder_status"));
-  //RCCHECK(rclc_service_init_default(&service, &node, ROSIDL_GET_SRV_TYPE_SUPPORT(example_interfaces, srv, AddTwoInts), "/add_two_ints"));
+  RCCHECK(rclc_publisher_init_default(&publisher, &node, ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, String), "brickfeeder_status"));
   Serial.println("created subsrciber and publisher");
 
   // create timer,
@@ -347,8 +307,7 @@ void setup() {
   //pinMode(vibrator_enable, OUTPUT);
 
 
-  //ledcAttachPin(vibrator_enable, 0);
-  //ledcSetup(0, 1000, 8);
+
   //enables a4988 stepper drivers, pin 8, 0=enable, 1=disable
   digitalWrite(enable_pin, 0);
   //sets x axis direction
@@ -358,13 +317,12 @@ void setup() {
   digitalWrite(MS3_pin, 0); //MS3
   digitalWrite(solenoid_pin1, LOW); //
   digitalWrite(solenoid_pin2, LOW); //
-  //digitalWrite(vibrator_enable, 1);
   ledcAttachPin(vibrator_enable, PWM1_Ch);
   ledcSetup(PWM1_Ch, PWM1_Freq, PWM1_Res);
 
   Serial.println("Starting loop");
   Serial.println("How many objects should be dispensed?");
-  //analogWrite(6, 160);
+
   pinMode(led_pin, OUTPUT);
 
   xTaskCreatePinnedToCore(
